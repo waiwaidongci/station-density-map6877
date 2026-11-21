@@ -13,7 +13,8 @@
 3. 分析配置：冻结来源、参数和全部样本，进入Redis队列。
 4. 完整结果：真实算法摘要、专属诊断、全部CSV导出和可恢复失败态。
 5. 复访计划：分析师草案→负责人批准→阅读者下载批准快照。
-6. 审计：登录、来源修改、任务worker完成、业务说明批准等事件。
+6. 补测空区：在已完成研究上圈定三项读数范围，求冻结样本中体积最大的长方体空区。
+7. 审计：登录、来源修改、任务worker完成、空区搜索、业务说明批准等事件。
 
 ## 快速启动
 
@@ -31,7 +32,7 @@ docker compose exec -T backend python -m scripts.seed_demo
 |---|---|
 | frontend | 原生 HTML / CSS / JS ES Modules，Nginx代理 `/api/` |
 | backend | Python3.11 / FastAPI / SQLAlchemy / JWT |
-| worker | 独立Python进程，Redis BLPOP队列，持久化结果/CSV/心跳 |
+| worker | 独立Python进程，同时消费分析队列与空区队列，持久化结果/CSV/检查点/心跳 |
 | db | PostgreSQL16，命名卷持久化 |
 | redis | Redis7，AOF命名卷 |
 
@@ -53,7 +54,7 @@ JWT有效期8小时；PBKDF2盐化哈希保存密码；角色每请求从数据�
 
 ## 实体与字段
 
-Survey / StationReading / DensityRun / VisitPlan 是核心实体；另有User和Audit。数据库实际表：`surveys` → `station_readings` → `density_runs` → `visit_plans`。样本以固定字段JSON保存，后端按以下字段严格验证，不接受未知字段替代必填值：温度 ℃（`temperature`）、相对湿度 %（`humidity`）、颗粒浓度 μg/m³（`particles`）。
+Survey / StationReading / DensityRun / VisitPlan 是核心实体；另有User、Audit 和 SiteClearanceSearch（补测空区搜索）。数据库实际表：`surveys` → `station_readings` → `density_runs` → `visit_plans`，另有 `site_clearance_searches` 以 `run_id` 唯一绑定一条已完成任务。样本以固定字段JSON保存，后端按以下字段严格验证，不接受未知字段替代必填值：温度 ℃（`temperature`）、相对湿度 %（`humidity`）、颗粒浓度 μg/m³（`particles`）。
 
 实体贯穿 `backend/src/models`、`schemas`、`services`、`controllers`、`routes`，以及 `frontend/src/api/research.js`、`stores/research.js` 和 `pages`。`Source.key` 与 `(Record.source_id, reference)` 为自然键；来源改名不会修改已冻结任务输入。业务说明在创建时保存结果快照，批准后从该快照导出。
 
@@ -68,6 +69,16 @@ Survey / StationReading / DensityRun / VisitPlan 是核心实体；另有User和
 
 失败态：业务字段缺失/非有限数值、参数越界、样本不足、退化特征或结构错误均明确拒绝或将任务标failed，错误消息保存在任务中。可回到来源或配置修正后重新执行，历史失败记录保留。
 
+### 补测空区（最大长方体空区）
+
+已完成研究的结果页可圈定温度、相对湿度、颗粒浓度的范围（须落在冻结样本的最小值与最大值之间），求该范围内体积最大的轴对齐长方体空区，作为下一轮补测的采样候选。计算使用冻结输入，不读取来源后续追加或修改的样本。
+
+- 精确解：以三项范围交集为根盒做分支定界——盒内有站时在该站的三个坐标处切成六个子盒，按体积从大到小展开；盒体积即分支上界。800 站通常在数秒内完成，不逐一枚举六个边界的组合。
+- 边界语义：站点落在盒面上（任一坐标等于边界）不算占据盒内部，只统计严格内部；噪声站在样本里没有特殊标记，一律计入障碍点。
+- 同体积：按六个边界的字典序取小，顺序为温度下界、温度上界、湿度下界、湿度上界、颗粒下界、颗粒上界。坐标按十进制字面量缩放成整数，体积与同体积判断均为精确整数运算，不受浮点误差影响。
+- 中断恢复：worker 每批节点后把待展开前沿写入检查点，可从「继续搜索」接着跑；worker 重启时会把遗留的 running 搜索重新入队。检查点绑定冻结输入校验和，输入被替换时拒绝恢复。重复投递的队列消息只会推进当前修订，不会丢候选。
+- 并发与发布：每次改动范围都会递增修订号；检查点与结果的落盘都是带 token 与修订号条件的单条 UPDATE，旧执行无法写入或发布。只有前沿清空且回查确认盒内严格内部无站后，才在结果页公布边界与体积。
+
 已知边界：只在温度/湿度/颗粒三个标准化特征上做密度分区；不是地理显著性、风险诊断或自动污染识别。eps敏感，分区编号没有大小顺序；含常量列明确拒绝。
 
 ## 演示数据与一天剧本
@@ -80,8 +91,8 @@ Survey / StationReading / DensityRun / VisitPlan 是核心实体；另有User和
 4. 09:20 新建“十一月复核研究”，按默认参数冻结241条输入。
 5. 09:21 独立worker消费Redis队列，返回实算结果与输入校验和。
 6. 09:25 分析师查看专属诊断及逐行结果，并下载CSV复算。
-7. 09:30 提交“十一月业务复核意见”，负责人核对并批准。
-8. 09:40 viewer下载批准快照，查看审计中的worker完成与批准事件。
+7. 09:30 在结果页圈定三项读数范围，搜索补测空区，核对边界与体积。
+8. 09:40 提交“十一月业务复核意见”，负责人核对并批准；viewer下载批准快照，查看审计中的worker完成与批准事件。
 
 ## 目录与本地开发
 
@@ -105,4 +116,4 @@ backend/migrations/001_initial.sql
 
 共享枚举：`backend/src/constants/enums.py` 与 `frontend/src/constants/enums.js` 都定义 admin/analyst/viewer、queued/running/completed/failed、draft/approved。后端service检查对应字符串；README为全量值说明。共享前端组件table/status/chart/business跨总览、结果、配置与复核复用；actions hook和format utils负责交互/格式。后端errors与rate_limit是两个中间件。
 
-测试及截图在批根 `test-artifacts/gb-0042/`，不混入源码。独立算法oracle、HTTP完整流程和真实Playwright浏览器流程见该目录 `TESTING.md`。License：MIT。
+测试及截图在批根 `test-artifacts/gb-0042/`，不混入源码。独立算法oracle、HTTP完整流程和真实Playwright浏览器流程见该目录 `TESTING.md`。补测空区的求解oracle与接口/并发测试见 `test_empty_box.py`（在 backend 目录运行 `python -m pytest ../test-artifacts/gb-0042/test_empty_box.py -q`，测试环境需可导入 `fakeredis`）。License：MIT。

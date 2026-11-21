@@ -21,6 +21,14 @@ export const domain = {
   "record_table": "station_readings",
   "run_table": "density_runs",
   "note_table": "visit_plans",
+  "empty_box_table": "site_clearance_searches",
+  "empty_box": {
+    "label": "补测空区",
+    "description": "在已完成研究的冻结样本中，寻找三项读数范围内体积最大的长方体空区，作为下一轮补测候选。",
+    "surface_rule": "落在候选盒面上的站点不算占据内部；噪声站与普通站一律计入。",
+    "tie_rule": "体积相同时按六个边界值依次取小：温度下界、温度上界、湿度下界、湿度上界、颗粒下界、颗粒上界。",
+    "chunk_nodes": 20000
+  },
   "eyebrow": "FIELD CONTOURS / 42",
   "headline": "让相似微站，自然连成一片。",
   "subtitle": "河砾微站协作组 · 环境特征密度分区与噪声复访",

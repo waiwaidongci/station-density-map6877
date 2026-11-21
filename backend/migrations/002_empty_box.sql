@@ -1,0 +1,6 @@
+-- 补测空区搜索：每条已完成分析任务最多一条搜索记录（run_id 唯一）。
+-- SQLAlchemy metadata 会幂等地创建该表；此文件记录表结构以方便审阅与迁移。
+-- 状态：queued / running / completed / failed
+-- revision：每次圈定范围变更递增，旧 worker 的检查点与结果写入按 token+revision 条件放行。
+-- checkpoint：待展开盒前沿（六个整数边界）与已展开节点数，可从中断处继续。
+-- result：仅在前沿清空且回查盒内严格内部无站后写入，含 bounds/volume_exact/verified。
